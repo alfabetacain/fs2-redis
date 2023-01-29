@@ -33,7 +33,7 @@ object IntegrationSuite extends IOSuite {
 
   private def connection(redis: RedisContainer, autoReconnect: Boolean = false): Resource[IO, Client[IO]] = {
     for {
-      connection <- Client.make2[IO](
+      connection <- Client.make[IO](
         Network[IO].client(
           SocketAddress(host"localhost", Port.fromString(redis.getRedisPort().toString).get)
         ),

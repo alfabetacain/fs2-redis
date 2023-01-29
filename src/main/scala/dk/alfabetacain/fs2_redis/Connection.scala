@@ -30,11 +30,10 @@ object Connection {
       autoReconnect: Boolean = false
   ): Resource[F, Connection[F]] = {
     Supervisor[F].flatMap { supervisor =>
-      val doSetup = for {
-        channel <- Channel.bounded[F, QueueItem[F]](10)
-        queue   <- Queue.bounded[F, QueueItem[F]](10)
-        _       <- setup(Stream.empty, supervisor, channel, queue, connect, autoReconnect)
-        _       <- scribe.cats[F].info("Allocated setup")
+      for {
+        channel <- Resource.eval(Channel.bounded[F, QueueItem[F]](10))
+        queue   <- Resource.eval(Queue.bounded[F, QueueItem[F]](10))
+        _       <- Resource.eval(setup(Stream.empty, supervisor, channel, queue, connect, autoReconnect))
         conn = new Connection[F] {
           override def send(input: Value.RESPArray): F[Value] = {
             for {
@@ -46,13 +45,8 @@ object Connection {
             } yield result
           }
         }
-      } yield (conn, channel)
-      for {
-        (conn, channel) <- Resource.eval(doSetup)
-        _               <- Resource.onFinalize(scribe.cats[F].info("Channel closed"))
-        _               <- Resource.onFinalize(channel.closed)
-        _               <- Resource.onFinalize(channel.close.void)
-        _               <- Resource.onFinalize(scribe.cats[F].info("Closing channel"))
+        _ <- Resource.onFinalize(channel.closed)
+        _ <- Resource.onFinalize(channel.close.void)
       } yield conn
     }
   }
