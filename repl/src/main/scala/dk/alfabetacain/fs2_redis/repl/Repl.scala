@@ -9,10 +9,24 @@ import fs2.text
 
 import java.nio.charset.StandardCharsets
 import cats.effect.kernel.Async
+import cats.effect.IOApp
+import cats.effect.{ ExitCode, IO }
+import org.typelevel.log4cats.slf4j.Slf4jFactory
+import org.typelevel.log4cats.LoggerFactory
 
-object Repl {
+object Repl extends IOApp {
 
-  def make[F[_]: Async](host: Host, port: Port, autoReconnect: Boolean): F[Unit] = {
+  override def run(args: List[String]): IO[ExitCode] = {
+    implicit val loggerFactory = Slf4jFactory[IO]
+    for {
+      host <- IO.fromOption(Host.fromString(args.head))(new RuntimeException(s"Could not parse host: ${args.head}"))
+      port <-
+        IO.fromOption(Port.fromString(args.tail.head))(new RuntimeException(s"Could not parse port: ${args.tail.head}"))
+      _ <- make[IO](host, port, true)
+    } yield ExitCode.Success
+  }
+
+  def make[F[_]: Async: LoggerFactory](host: Host, port: Port, autoReconnect: Boolean): F[Unit] = {
 
     val conn = for {
       client <- Client.make(

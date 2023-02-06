@@ -14,6 +14,7 @@ import fs2.concurrent.Channel
 import fs2.interop.scodec.StreamDecoder
 import fs2.io.net.Socket
 import cats.MonadThrow
+import org.typelevel.log4cats.LoggerFactory
 
 trait Connection[F[_]] {
   def send(input: Value.RESPArray): F[Value]
@@ -25,7 +26,7 @@ object Connection {
 
   final case class QueueItem[F[_]](cmd: Value.RESPArray, onComplete: Deferred[F, Either[Throwable, Value]])
 
-  def make[F[_]: Async](
+  def make[F[_]: Async: LoggerFactory](
       connect: Resource[F, Socket[F]],
       autoReconnect: Boolean = false
   ): Resource[F, Connection[F]] = {
@@ -59,14 +60,14 @@ object Connection {
     }
   }
 
-  private def reader[F[_]: Async](
+  private def reader[F[_]: Async: LoggerFactory](
       socket: Socket[F],
       supervisor: Supervisor[F],
       queue: Queue[F, QueueItem[F]],
       interruptOn: F[Either[Throwable, Unit]],
       onComplete: F[Unit],
   ): F[Unit] = {
-    val log = scribe.cats[F]
+    val log = LoggerFactory[F].getLogger
     socket.reads.through(StreamDecoder.many(parser.Value.combined).toPipeByte).evalMap { response =>
       for {
         nextWaiting <- queue.take
@@ -82,7 +83,7 @@ object Connection {
       }
   }
 
-  private def writer[F[_]: Async](
+  private def writer[F[_]: Async: LoggerFactory](
       outstanding: Stream[F, QueueItem[F]],
       socket: Socket[F],
       channel: Channel[F, QueueItem[F]],
@@ -90,7 +91,7 @@ object Connection {
       interruptOn: F[Either[Throwable, Unit]],
       onComplete: F[Unit],
   ): F[Unit] = {
-    val log = scribe.cats[F]
+    val log = LoggerFactory[F].getLogger
     (outstanding ++ channel.stream)
       .evalMap { case QueueItem(cmd, deferred) =>
         for {
@@ -109,7 +110,7 @@ object Connection {
       }
   }
 
-  private def onStreamTermination[F[_]: Async](
+  private def onStreamTermination[F[_]: Async: LoggerFactory](
       supervisor: Supervisor[F],
       channel: Channel[F, QueueItem[F]],
       queue: Queue[F, QueueItem[F]],
@@ -119,7 +120,7 @@ object Connection {
       writerCompleted: F[Unit],
       readerCompleted: F[Unit],
   ): F[Unit] = {
-    val log = scribe.cats[F]
+    val log = LoggerFactory[F].getLogger
     for {
       _ <- log.info("Signaling shutdown")
       _ <- signalShutdown
@@ -157,7 +158,7 @@ object Connection {
     } yield ()
   }
 
-  private def setup[F[_]: Async](
+  private def setup[F[_]: Async: LoggerFactory](
       outstanding: Stream[F, QueueItem[F]],
       supervisor: Supervisor[F],
       channel: Channel[F, QueueItem[F]],
@@ -165,7 +166,7 @@ object Connection {
       connect: Resource[F, Socket[F]],
       autoReconnect: Boolean
   ): F[Unit] = {
-    val log = scribe.cats[F]
+    val log = LoggerFactory[F].getLogger
     Deferred[F, Unit].flatMap { whenDone =>
       val action: F[Unit] = connect.use { socket =>
         for {

@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 import scala.util.Try
 import scala.annotation.nowarn
+import org.typelevel.log4cats.slf4j.Slf4jFactory
 
 object IntegrationSuite extends IOSuite {
 
@@ -30,6 +31,8 @@ object IntegrationSuite extends IOSuite {
 
   @nowarn("msg=private default argument")
   private def randomStr(prefix: String = ""): String = prefix + "-" + UUID.randomUUID().toString()
+
+  private implicit val loggerFactory = Slf4jFactory[IO]
 
   private def connection(redis: RedisContainer, autoReconnect: Boolean = false): Resource[IO, Client[IO]] = {
     for {
@@ -50,7 +53,7 @@ object IntegrationSuite extends IOSuite {
       case RESPBulkString(data) => Try(new String(data, StandardCharsets.UTF_8)).toEither.left.map(_.toString())
       case SimpleString(value)  => Right(value)
       case RESPArray(elements) =>
-        elements.map(asString).sequence.map(_.mkString(","))
+        elements.map(asString).sequence[Either[String, *], String].map(_.mkString(","))
       case RESPNull => Left("null")
     }
   }
@@ -97,6 +100,18 @@ object IntegrationSuite extends IOSuite {
         _          <- expect(asString(killResult) == Right("1")).failFast
         foundValue <- client.raw("GET", key).attempt
       } yield expect(foundValue.isLeft)
+    }
+  }
+
+  test("get/set") { redis =>
+    connection(redis, false).use { client =>
+      val key   = randomStr("key")
+      val value = randomStr("value")
+      for {
+        initial <- client.get(key)
+        _       <- client.set(key, value)
+        found   <- client.get(key)
+      } yield expect(initial == None).and(expect(found == Some(value)))
     }
   }
 }
