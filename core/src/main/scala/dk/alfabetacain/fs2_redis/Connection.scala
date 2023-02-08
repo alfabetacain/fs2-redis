@@ -1,10 +1,10 @@
 package dk.alfabetacain.fs2_redis
 
+import cats.MonadThrow
 import cats.effect.kernel.Async
 import cats.effect.kernel.Deferred
 import cats.effect.kernel.Resource
 import cats.effect.std.Queue
-import cats.effect.std.Supervisor
 import cats.effect.syntax.all._
 import cats.syntax.all._
 import dk.alfabetacain.fs2_redis.parser.Value
@@ -13,7 +13,6 @@ import fs2.Stream
 import fs2.concurrent.Channel
 import fs2.interop.scodec.StreamDecoder
 import fs2.io.net.Socket
-import cats.MonadThrow
 import org.typelevel.log4cats.LoggerFactory
 
 trait Connection[F[_]] {
@@ -30,68 +29,73 @@ object Connection {
       connect: Resource[F, Socket[F]],
       autoReconnect: Boolean = false
   ): Resource[F, Connection[F]] = {
-    Supervisor[F].flatMap { supervisor =>
-      for {
-        channel <- Resource.eval(Channel.bounded[F, QueueItem[F]](10))
-        queue   <- Resource.eval(Queue.bounded[F, QueueItem[F]](10))
-        _       <- Resource.eval(setup(Stream.empty, supervisor, channel, queue, connect, autoReconnect))
-        conn = new Connection[F] {
-          override def send(input: Value.RESPArray): F[Value] = {
-            for {
-              onComplete <- Deferred[F, Either[Throwable, Value]]
-              sendResult <- channel.send(QueueItem(input, onComplete))
-              _ <- MonadThrow[F].fromEither(sendResult.leftMap(_ => new RuntimeException("channel already closed!")))
-              maybeResult <- onComplete.get
-              result      <- MonadThrow[F].fromEither(maybeResult)
-            } yield result
-          }
+    for {
+      channel <- Resource.eval(Channel.bounded[F, QueueItem[F]](10))
+      queue   <- Resource.eval(Queue.bounded[F, QueueItem[F]](10))
+      connectionFiber <- runStreams(Stream.empty, channel, queue, connect, autoReconnect).guarantee(shutdown[F](
+        channel,
+        queue
+      )).background
+      conn = new Connection[F] {
+        override def send(input: Value.RESPArray): F[Value] = {
+          for {
+            onComplete <- Deferred[F, Either[Throwable, Value]]
+            sendResult <- channel.send(QueueItem(input, onComplete))
+            _ <- MonadThrow[F].fromEither(sendResult.leftMap(_ => new RuntimeException("channel already closed!")))
+            maybeResult <- onComplete.get
+            result      <- MonadThrow[F].fromEither(maybeResult)
+          } yield result
         }
-        _ <- Resource.onFinalize(channel.closed)
-        _ <- Resource.onFinalize(channel.close.void)
-      } yield conn
-    }
+      }
+      _ <- Resource.onFinalize(shutdown(channel, queue))
+    } yield conn
   }
 
-  private def queueToList[F[_]: Async, A](queue: Queue[F, A], acc: List[A]): F[List[A]] = {
-    queue.tryTake.flatMap {
-      case None => acc.pure[F]
-      case Some(item) =>
-        queueToList(queue, item :: acc)
-    }
-  }
-
-  private def reader[F[_]: Async: LoggerFactory](
-      socket: Socket[F],
-      supervisor: Supervisor[F],
-      queue: Queue[F, QueueItem[F]],
-      interruptOn: F[Either[Throwable, Unit]],
-      onComplete: F[Unit],
+  private def shutdown[F[_]: Async: LoggerFactory](
+      channel: Channel[F, QueueItem[F]],
+      queue: Queue[F, QueueItem[F]]
   ): F[Unit] = {
     val log = LoggerFactory[F].getLogger
+    for {
+      _ <- channel.close
+      _ <- channel.closed
+      // drain the channel in case some items were in flight but not queued
+      channelItems <- channel.stream.compile.toList
+      queueItems   <- drainQueue(queue)
+      _ <-
+        (channelItems ++ queueItems).map { item =>
+          for {
+            _ <- log.info("Completing queued task")
+            errorResult = Left(new ConnectionClosedException)
+            _ <- item.onComplete.complete(errorResult)
+          } yield ()
+        }.sequence
+    } yield ()
+  }
+
+  private def drainQueue[F[_]: Async, A](queue: Queue[F, A]): F[List[A]] = {
+    Stream.unfoldEval(queue)(_.tryTake.map(_.map((_, queue))))
+      .compile.toList
+  }
+
+  private def reader[F[_]: Async](
+      socket: Socket[F],
+      queue: Queue[F, QueueItem[F]],
+  ): F[Unit] = {
     socket.reads.through(StreamDecoder.many(parser.Value.combined).toPipeByte).evalMap { response =>
       for {
         nextWaiting <- queue.take
         _           <- nextWaiting.onComplete.complete(Right(response))
       } yield ()
-    }.interruptWhen(interruptOn)
-      .compile.drain.guaranteeCase {
-        case err =>
-          for {
-            _ <- log.error(s"Writer failed. Shutting down... ($err)")
-            _ <- onComplete
-          } yield ()
-      }
+    }.compile.drain
   }
 
-  private def writer[F[_]: Async: LoggerFactory](
+  private def writer[F[_]: Async](
       outstanding: Stream[F, QueueItem[F]],
       socket: Socket[F],
       channel: Channel[F, QueueItem[F]],
       queue: Queue[F, QueueItem[F]],
-      interruptOn: F[Either[Throwable, Unit]],
-      onComplete: F[Unit],
   ): F[Unit] = {
-    val log = LoggerFactory[F].getLogger
     (outstanding ++ channel.stream)
       .evalMap { case QueueItem(cmd, deferred) =>
         for {
@@ -100,118 +104,45 @@ object Connection {
       }
       .flatMap(bytes => Stream.chunk(Chunk.array(bytes)))
       .through(socket.writes)
-      .interruptWhen(interruptOn)
-      .compile.drain.guaranteeCase {
-        case err =>
-          for {
-            _ <- log.error(s"Writer failed. Shutting down... ($err)")
-            _ <- onComplete
-          } yield ()
-      }
+      .compile
+      .drain
   }
 
-  private def onStreamTermination[F[_]: Async: LoggerFactory](
-      supervisor: Supervisor[F],
+  private def runStreams[F[_]: Async: LoggerFactory](
+      outstanding: Stream[F, QueueItem[F]],
       channel: Channel[F, QueueItem[F]],
       queue: Queue[F, QueueItem[F]],
       connect: Resource[F, Socket[F]],
       autoReconnect: Boolean,
-      signalShutdown: F[Unit],
-      writerCompleted: F[Unit],
-      readerCompleted: F[Unit],
   ): F[Unit] = {
     val log = LoggerFactory[F].getLogger
     for {
-      _ <- log.info("Signaling shutdown")
-      _ <- signalShutdown
-      _ <- writerCompleted
-      _ <- log.info("Writer completed")
-      _ <- readerCompleted
-      _ <- log.info("Reader completed")
-      _ <-
-        if (!autoReconnect) {
-          for {
-            _ <- channel.close
-            _ <- channel.closed
-          } yield ()
-        } else {
-          Async[F].unit
-        }
-      outstanding <- queueToList(queue, List.empty)
-      _ <-
-        if (autoReconnect) {
-          for {
-            _ <- log.info("Reconnecting...")
-            _ <- outstanding.map(queue.offer).sequence
-            _ <- setup(Stream(outstanding: _*), supervisor, channel, queue, connect, autoReconnect)
-          } yield ()
-        } else {
-          outstanding.map { item =>
-            for {
-              _ <- log.info("Completing queued task")
-              errorResult = Left(new ConnectionClosedException)
-              _ <- item.onComplete.complete(errorResult)
-            } yield ()
-          }.sequence
-        }
-      _ <- log.info("Done with error handling")
-    } yield ()
-  }
-
-  private def setup[F[_]: Async: LoggerFactory](
-      outstanding: Stream[F, QueueItem[F]],
-      supervisor: Supervisor[F],
-      channel: Channel[F, QueueItem[F]],
-      queue: Queue[F, QueueItem[F]],
-      connect: Resource[F, Socket[F]],
-      autoReconnect: Boolean
-  ): F[Unit] = {
-    val log = LoggerFactory[F].getLogger
-    Deferred[F, Unit].flatMap { whenDone =>
-      val action: F[Unit] = connect.use { socket =>
-        for {
-          blocker        <- Deferred[F, Unit]
-          shutdownSignal <- Deferred[F, Unit]
-          writerDone <- supervisor.supervise(
+      _ <- connect.use { socket =>
+        val fibers = for {
+          writerFiber <-
             writer(
               outstanding,
               socket,
               channel,
               queue,
-              shutdownSignal.get.attempt,
-              blocker.complete(()).void
-            )
-          )
-
-          readerDone <- supervisor.supervise(reader(
-            socket,
-            supervisor,
-            queue,
-            shutdownSignal.get.attempt,
-            blocker.complete(()).void
-          ))
-          _ <- supervisor.supervise {
-            val action = for {
-              _ <- blocker.get
-              _ <- onStreamTermination(
-                supervisor,
-                channel,
-                queue,
-                connect,
-                autoReconnect,
-                shutdownSignal.complete(()).void,
-                writerDone.join.void,
-                readerDone.join.void
-              )
-            } yield ()
-            action.guarantee(whenDone.complete(()).void)
-          }
-          _ <- log.info("Awaiting termination...")
-          _ <- whenDone.get
-          _ <- log.info("Terminated")
-        } yield ()
+            ).background
+          readerFiber <-
+            reader(socket, queue).background
+        } yield (readerFiber, writerFiber)
+        fibers.use { case (writerFiber, readerFiber) =>
+          Async[F].race(writerFiber, readerFiber)
+        }
       }
-      supervisor.supervise(action).void
-    }
+      _ <-
+        if (autoReconnect) {
+          for {
+            _           <- log.info(s"Reconnecting...")
+            outstanding <- drainQueue(queue)
+            _           <- runStreams(Stream(outstanding: _*), channel, queue, connect, autoReconnect)
+          } yield ()
+        } else {
+          Async[F].unit
+        }
+    } yield ()
   }
 }

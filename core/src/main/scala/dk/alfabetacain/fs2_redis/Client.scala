@@ -9,18 +9,104 @@ import fs2.io.net.Socket
 import java.nio.charset.StandardCharsets
 import cats.MonadThrow
 import org.typelevel.log4cats.LoggerFactory
+import cats.effect.kernel.Sync
+import dk.alfabetacain.fs2_redis.Client.expect
+import dk.alfabetacain.fs2_redis.Client.KillClientFilter
+import dk.alfabetacain.fs2_redis.codec.Codec.BulkStringCodec
+import cats.data.NonEmptyList
 
-trait Client[F[_]] {
-  def raw(command: String*): F[Value]
-  def get(key: String): F[Option[String]]
-  def set(key: String, value: String): F[Boolean]
+trait Client[F[_], I, O] {
+  def get(key: I): F[Option[O]]
+  def set(key: I, value: I): F[Boolean]
+  def ping(): F[String]
+  def clientId(): F[Long]
+  def killClient(filters: NonEmptyList[KillClientFilter], killMe: Boolean): F[Long]
+  def raw(arguments: NonEmptyList[Value.RESPBulkString]): F[Value]
+}
+
+private[fs2_redis] class ClientImpl[F[_]: Sync, I, O](
+    conn: Connection[F],
+    inputCodec: BulkStringCodec[I],
+    outputCodec: BulkStringCodec[O]
+) extends Client[F, I, O] {
+
+  override def raw(arguments: NonEmptyList[Value.RESPBulkString]): F[Value] = {
+    val asArray = Value.RESPArray(arguments.toList)
+    for {
+      sendResult <- conn.send(asArray)
+    } yield sendResult
+  }
+
+  private def toBS(input: String): Value.RESPBulkString =
+    Value.RESPBulkString(input.getBytes(StandardCharsets.US_ASCII))
+
+  private def encode(input: I): Value.RESPBulkString = inputCodec.encode(input)
+
+  override def get(key: I): F[Option[O]] = {
+    expect(
+      raw(NonEmptyList.of(toBS("GET"), encode(key))),
+      {
+        case Value.RESPNull               => Option.empty
+        case result: Value.RESPBulkString => outputCodec.decode(result).toOption
+      }
+    )
+  }
+
+  override def set(key: I, value: I): F[Boolean] = {
+    expect(
+      raw(NonEmptyList.of(toBS("SET"), encode(key), encode(value))),
+      {
+        case simple: Value.SimpleString => simple.value == "OK"
+      }
+    )
+  }
+
+  override def ping(): F[String] = {
+    expect(
+      raw(NonEmptyList.of(toBS("PING"))),
+      {
+        case simple: Value.SimpleString => simple.value
+      }
+    )
+  }
+
+  override def clientId(): F[Long] = {
+    expect(
+      raw(NonEmptyList.of(toBS("CLIENT"), toBS("ID"))),
+      {
+        case number: Value.RESPInteger => number.value
+      }
+    )
+  }
+
+  override def killClient(filters: NonEmptyList[KillClientFilter], killMe: Boolean): F[Long] = {
+    val encodedFilters = filters.map {
+      case KillClientFilter.Id(value) => toBS(value.toString())
+    }
+    expect(
+      raw(NonEmptyList.of(toBS("CLIENT"), toBS("KILL"), toBS("ID")) ++ encodedFilters.toList ++ List(
+        toBS("SKIPME"),
+        toBS(if (killMe) "yes" else "no")
+      )),
+      {
+        case simple: Value.SimpleString => if (simple.value == "OK") 1 else 0
+        case number: Value.RESPInteger  => number.value
+      }
+    )
+  }
 }
 
 object Client {
 
   final case class Config(autoReconnect: Boolean)
 
-  private def expect[F[_]: MonadThrow, A](action: F[Value], mapper: PartialFunction[Value, A]): F[A] = {
+  sealed trait KillClientFilter
+
+  object KillClientFilter {
+    final case class Id(value: Long) extends KillClientFilter
+  }
+
+  private[fs2_redis] def expect[F[_]: MonadThrow, A](action: F[Value], mapper: PartialFunction[Value, A]): F[A] = {
     action.flatMap { result =>
       if (mapper.isDefinedAt(result)) {
         mapper(result).pure[F]
@@ -30,43 +116,14 @@ object Client {
     }
   }
 
-  def make[F[_]: Async: LoggerFactory](connect: Resource[F, Socket[F]], config: Config): Resource[F, Client[F]] = {
+  def make[F[_]: Async: LoggerFactory, I, O](
+      connect: Resource[F, Socket[F]],
+      config: Config,
+      inputCodec: BulkStringCodec[I],
+      outputCodec: BulkStringCodec[O]
+  ): Resource[F, Client[F, I, O]] = {
     Connection.make[F](connect, config.autoReconnect).map { conn =>
-      new Client[F] {
-        override def raw(command: String*): F[Value] = {
-          for {
-            encoded <-
-              Async[F].delay {
-                Value.RESPArray(
-                  command.toList.filter(_.nonEmpty).map(v =>
-                    Value.RESPBulkString(v.getBytes(StandardCharsets.UTF_8))
-                  )
-                )
-              }
-            sendResult <- conn.send(encoded)
-          } yield sendResult
-        }
-
-        override def get(key: String): F[Option[String]] = {
-          expect(
-            raw("GET", key),
-            {
-              case simple: Value.SimpleString => Option(simple.value)
-              case bulk: Value.RESPBulkString => Option(new String(bulk.data, StandardCharsets.UTF_8))
-              case Value.RESPNull             => Option.empty
-            }
-          )
-        }
-
-        override def set(key: String, value: String): F[Boolean] = {
-          expect(
-            raw("SET", key, value),
-            {
-              case simple: Value.SimpleString => simple.value == "OK"
-            }
-          )
-        }
-      }
+      new ClientImpl[F, I, O](conn, inputCodec, outputCodec)
     }
   }
 }

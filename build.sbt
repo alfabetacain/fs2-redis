@@ -51,6 +51,7 @@ lazy val repl = (project in file("repl"))
       "org.typelevel" %% "log4cats-slf4j"  % "2.5.0",
       "ch.qos.logback" % "logback-classic" % logback,
     ),
+    addCompilerPlugin("org.typelevel" % "kind-projector" % "0.13.2" cross CrossVersion.full),
   ).dependsOn(core)
 
 lazy val root = (project in file("."))

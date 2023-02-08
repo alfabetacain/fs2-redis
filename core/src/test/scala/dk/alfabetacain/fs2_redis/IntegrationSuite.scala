@@ -20,6 +20,8 @@ import java.util.UUID
 import scala.util.Try
 import scala.annotation.nowarn
 import org.typelevel.log4cats.slf4j.Slf4jFactory
+import dk.alfabetacain.fs2_redis.codec.Codec
+import cats.data.NonEmptyList
 
 object IntegrationSuite extends IOSuite {
 
@@ -34,13 +36,19 @@ object IntegrationSuite extends IOSuite {
 
   private implicit val loggerFactory = Slf4jFactory[IO]
 
-  private def connection(redis: RedisContainer, autoReconnect: Boolean = false): Resource[IO, Client[IO]] = {
+  @nowarn("msg=private default argument")
+  private def connection(
+      redis: RedisContainer,
+      autoReconnect: Boolean = true,
+  ): Resource[IO, Client[IO, String, String]] = {
     for {
-      connection <- Client.make[IO](
+      connection <- Client.make[IO, String, String](
         Network[IO].client(
           SocketAddress(host"localhost", Port.fromString(redis.getRedisPort().toString).get)
         ),
-        Client.Config(autoReconnect)
+        Client.Config(autoReconnect),
+        Codec.utf8Codec,
+        Codec.utf8Codec,
       )
     } yield connection
   }
@@ -58,35 +66,18 @@ object IntegrationSuite extends IOSuite {
     }
   }
 
-  test("raw integration test") { redis =>
-    connection(redis).use { conn =>
-      val key   = "key"
-      val value = "value"
-      for {
-        _       <- IO.println("Getting key 1")
-        current <- conn.raw("GET", key)
-        _       <- IO.println("Got key 1")
-        _       <- expect(current == Value.RESPNull).failFast
-        _       <- conn.raw("SET", key, value)
-        now     <- conn.raw("GET", key)
-        _       <- IO.println("Got key 2")
-      } yield expect(asString(now) == Right(value))
-    }
-  }
-
   test("Automatic reconnects") { redis =>
     connection(redis, true).use { conn =>
       val key   = randomStr("key")
       val value = randomStr("value")
       for {
-        _          <- conn.raw("SET", key, value)
-        clientId   <- conn.raw("CLIENT", "ID").map(asString)
-        _          <- expect(clientId.isRight).failFast
+        _          <- conn.set(key, value)
+        clientId   <- conn.clientId()
         _          <- IO.println(s"id = $clientId")
-        killResult <- conn.raw("CLIENT", "KILL", "ID", clientId.toOption.get, "SKIPME", "no")
-        _          <- expect(asString(killResult) == Right("1")).failFast
-        foundValue <- conn.raw("GET", key)
-      } yield expect(asString(foundValue) == Right(value))
+        killResult <- conn.killClient(NonEmptyList.of(Client.KillClientFilter.Id(clientId)), false)
+        _          <- expect(killResult == 1).failFast
+        foundValue <- conn.get(key)
+      } yield expect(foundValue == Some(value))
     }
   }
 
@@ -94,11 +85,10 @@ object IntegrationSuite extends IOSuite {
     connection(redis, false).use { client =>
       val key = randomStr("key")
       for {
-        clientId   <- client.raw("CLIENT", "ID").map(asString)
-        _          <- expect(clientId.isRight).failFast
-        killResult <- client.raw("CLIENT", "KILL", "ID", clientId.toOption.get, "SKIPME", "no")
-        _          <- expect(asString(killResult) == Right("1")).failFast
-        foundValue <- client.raw("GET", key).attempt
+        clientId   <- client.clientId()
+        killResult <- client.killClient(NonEmptyList.of(Client.KillClientFilter.Id(clientId)), false)
+        _          <- expect(killResult == 1).failFast
+        foundValue <- client.get(key).attempt
       } yield expect(foundValue.isLeft)
     }
   }
@@ -112,6 +102,20 @@ object IntegrationSuite extends IOSuite {
         _       <- client.set(key, value)
         found   <- client.get(key)
       } yield expect(initial == None).and(expect(found == Some(value)))
+    }
+  }
+
+  test("a thousand pings") { redis =>
+    List.fill(1000)(connection(redis, false).use { client =>
+      client.ping()
+    }).parSequence.map(ls => forEach(ls)(item => expect(item == "PONG")))
+  }
+
+  test("a thousand pings on one connection") { redis =>
+    connection(redis, false).use { client =>
+      List.fill(2000)(
+        client.ping()
+      ).parSequence.map(ls => forEach(ls)(item => expect(item == "PONG")))
     }
   }
 }
