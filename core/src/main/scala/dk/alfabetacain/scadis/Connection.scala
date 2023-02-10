@@ -1,4 +1,4 @@
-package dk.alfabetacain.fs2_redis
+package dk.alfabetacain.scadis
 
 import cats.MonadThrow
 import cats.effect.kernel.Async
@@ -7,7 +7,7 @@ import cats.effect.kernel.Resource
 import cats.effect.std.Queue
 import cats.effect.syntax.all._
 import cats.syntax.all._
-import dk.alfabetacain.fs2_redis.parser.Value
+import dk.alfabetacain.scadis.parser.Value
 import fs2.Chunk
 import fs2.Stream
 import fs2.concurrent.Channel
@@ -51,11 +51,10 @@ object Connection {
     } yield conn
   }
 
-  private def shutdown[F[_]: Async: LoggerFactory](
+  private def shutdown[F[_]: Async](
       channel: Channel[F, QueueItem[F]],
       queue: Queue[F, QueueItem[F]]
   ): F[Unit] = {
-    val log = LoggerFactory[F].getLogger
     for {
       _ <- channel.close
       _ <- channel.closed
@@ -64,9 +63,8 @@ object Connection {
       queueItems   <- drainQueue(queue)
       _ <-
         (channelItems ++ queueItems).map { item =>
+          val errorResult = Left(new ConnectionClosedException)
           for {
-            _ <- log.info("Completing queued task")
-            errorResult = Left(new ConnectionClosedException)
             _ <- item.onComplete.complete(errorResult)
           } yield ()
         }.sequence

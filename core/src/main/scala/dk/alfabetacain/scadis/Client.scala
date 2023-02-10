@@ -1,19 +1,18 @@
-package dk.alfabetacain.fs2_redis
+package dk.alfabetacain.scadis
 
+import cats.data.NonEmptyList
 import cats.effect.kernel.Async
 import cats.effect.kernel.Resource
+import cats.effect.kernel.Sync
 import cats.syntax.all._
-import dk.alfabetacain.fs2_redis.parser.Value
+import dk.alfabetacain.scadis.Client.KillClientFilter
+import dk.alfabetacain.scadis.Util.expect
+import dk.alfabetacain.scadis.codec.Codec.BulkStringCodec
+import dk.alfabetacain.scadis.parser.Value
 import fs2.io.net.Socket
+import org.typelevel.log4cats.LoggerFactory
 
 import java.nio.charset.StandardCharsets
-import cats.MonadThrow
-import org.typelevel.log4cats.LoggerFactory
-import cats.effect.kernel.Sync
-import dk.alfabetacain.fs2_redis.Client.expect
-import dk.alfabetacain.fs2_redis.Client.KillClientFilter
-import dk.alfabetacain.fs2_redis.codec.Codec.BulkStringCodec
-import cats.data.NonEmptyList
 
 trait Client[F[_], I, O] {
   def get(key: I): F[Option[O]]
@@ -24,7 +23,7 @@ trait Client[F[_], I, O] {
   def raw(arguments: NonEmptyList[Value.RESPBulkString]): F[Value]
 }
 
-private[fs2_redis] class ClientImpl[F[_]: Sync, I, O](
+private[scadis] class ClientImpl[F[_]: Sync, I, O](
     conn: Connection[F],
     inputCodec: BulkStringCodec[I],
     outputCodec: BulkStringCodec[O]
@@ -104,16 +103,6 @@ object Client {
 
   object KillClientFilter {
     final case class Id(value: Long) extends KillClientFilter
-  }
-
-  private[fs2_redis] def expect[F[_]: MonadThrow, A](action: F[Value], mapper: PartialFunction[Value, A]): F[A] = {
-    action.flatMap { result =>
-      if (mapper.isDefinedAt(result)) {
-        mapper(result).pure[F]
-      } else {
-        MonadThrow[F].raiseError(new IllegalArgumentException(s"Unexpected unparsable response: $result"))
-      }
-    }
   }
 
   def make[F[_]: Async: LoggerFactory, I, O](

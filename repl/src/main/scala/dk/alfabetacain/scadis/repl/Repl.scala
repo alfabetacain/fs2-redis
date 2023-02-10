@@ -1,4 +1,4 @@
-package dk.alfabetacain.fs2_redis
+package dk.alfabetacain.scadis
 
 import cats.effect.kernel.Deferred
 import cats.effect.kernel.Resource
@@ -13,9 +13,9 @@ import cats.effect.IOApp
 import cats.effect.{ ExitCode, IO }
 import org.typelevel.log4cats.slf4j.Slf4jFactory
 import org.typelevel.log4cats.LoggerFactory
-import dk.alfabetacain.fs2_redis.codec.Codec
+import dk.alfabetacain.scadis.codec.Codec
 import cats.data.NonEmptyList
-import dk.alfabetacain.fs2_redis.parser.Value
+import dk.alfabetacain.scadis.parser.Value
 import scala.util.Try
 
 object Repl extends IOApp {

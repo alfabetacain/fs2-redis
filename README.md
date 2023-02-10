@@ -1,6 +1,6 @@
-# fs2-redis
+# scadis
 
-Simple cats-effect based redis client
+Simple cats-effect based redis client, heavily inspired by [redis4cats](https://github.com/profunktor/redis4cats).
 
 ## Example usage
 

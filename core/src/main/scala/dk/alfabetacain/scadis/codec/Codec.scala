@@ -1,6 +1,6 @@
-package dk.alfabetacain.fs2_redis.codec
+package dk.alfabetacain.scadis.codec
 
-import dk.alfabetacain.fs2_redis.parser.Value
+import dk.alfabetacain.scadis.parser.Value
 
 import java.nio.charset.StandardCharsets
 import scala.util.Try

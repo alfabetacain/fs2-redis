@@ -1,17 +1,17 @@
-package dk.alfabetacain.fs2_redis
+package dk.alfabetacain.scadis
 
 import cats.effect.IO
 import cats.effect.kernel.Resource
 import cats.syntax.all._
 import com.comcast.ip4s.SocketAddress
 import com.comcast.ip4s._
-import dk.alfabetacain.fs2_redis.parser.Value
-import dk.alfabetacain.fs2_redis.parser.Value.RESPArray
-import dk.alfabetacain.fs2_redis.parser.Value.RESPBulkString
-import dk.alfabetacain.fs2_redis.parser.Value.RESPError
-import dk.alfabetacain.fs2_redis.parser.Value.RESPInteger
-import dk.alfabetacain.fs2_redis.parser.Value.RESPNull
-import dk.alfabetacain.fs2_redis.parser.Value.SimpleString
+import dk.alfabetacain.scadis.parser.Value
+import dk.alfabetacain.scadis.parser.Value.RESPArray
+import dk.alfabetacain.scadis.parser.Value.RESPBulkString
+import dk.alfabetacain.scadis.parser.Value.RESPError
+import dk.alfabetacain.scadis.parser.Value.RESPInteger
+import dk.alfabetacain.scadis.parser.Value.RESPNull
+import dk.alfabetacain.scadis.parser.Value.SimpleString
 import fs2.io.net.Network
 import weaver._
 
@@ -20,7 +20,7 @@ import java.util.UUID
 import scala.util.Try
 import scala.annotation.nowarn
 import org.typelevel.log4cats.slf4j.Slf4jFactory
-import dk.alfabetacain.fs2_redis.codec.Codec
+import dk.alfabetacain.scadis.codec.Codec
 import cats.data.NonEmptyList
 
 object IntegrationSuite extends IOSuite {

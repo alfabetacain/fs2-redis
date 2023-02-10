@@ -1,4 +1,4 @@
-package dk.alfabetacain.fs2_redis.parser
+package dk.alfabetacain.scadis.parser
 
 import weaver._
 import weaver.scalacheck._
