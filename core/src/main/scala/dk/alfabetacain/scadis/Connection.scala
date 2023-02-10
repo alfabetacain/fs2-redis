@@ -1,6 +1,7 @@
 package dk.alfabetacain.scadis
 
 import cats.MonadThrow
+import cats.data.NonEmptyList
 import cats.effect.kernel.Async
 import cats.effect.kernel.Deferred
 import cats.effect.kernel.Resource
@@ -16,14 +17,14 @@ import fs2.io.net.Socket
 import org.typelevel.log4cats.LoggerFactory
 
 trait Connection[F[_]] {
-  def send(input: Value.RESPArray): F[Value]
+  def send(input: NonEmptyList[Value.RBulkString]): F[Value]
 }
 
 object Connection {
 
   class ConnectionClosedException() extends RuntimeException
 
-  final case class QueueItem[F[_]](cmd: Value.RESPArray, onComplete: Deferred[F, Either[Throwable, Value]])
+  final case class QueueItem[F[_]](cmd: Value.RArray, onComplete: Deferred[F, Either[Throwable, Value]])
 
   def make[F[_]: Async: LoggerFactory](
       connect: Resource[F, Socket[F]],
@@ -37,10 +38,10 @@ object Connection {
         queue
       )).background
       conn = new Connection[F] {
-        override def send(input: Value.RESPArray): F[Value] = {
+        override def send(input: NonEmptyList[Value.RBulkString]): F[Value] = {
           for {
             onComplete <- Deferred[F, Either[Throwable, Value]]
-            sendResult <- channel.send(QueueItem(input, onComplete))
+            sendResult <- channel.send(QueueItem(Value.RArray(input.toList), onComplete))
             _ <- MonadThrow[F].fromEither(sendResult.leftMap(_ => new RuntimeException("channel already closed!")))
             maybeResult <- onComplete.get
             result      <- MonadThrow[F].fromEither(maybeResult)
@@ -127,8 +128,11 @@ object Connection {
           readerFiber <-
             reader(socket, queue).background
         } yield (readerFiber, writerFiber)
-        fibers.use { case (writerFiber, readerFiber) =>
-          Async[F].race(writerFiber, readerFiber)
+        fibers.use { case (readerFiber, writerFiber) =>
+          Async[F].race(
+            writerFiber.onError { err => log.error(err)("Writer exited with error") },
+            readerFiber.onError { err => log.error(err)("Reader exited with error") }
+          )
         }
       }
       _ <-

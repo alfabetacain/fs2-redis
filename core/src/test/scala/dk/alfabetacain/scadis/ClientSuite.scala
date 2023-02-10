@@ -1,29 +1,23 @@
 package dk.alfabetacain.scadis
 
+import cats.data.NonEmptyList
 import cats.effect.IO
 import cats.effect.kernel.Resource
 import cats.syntax.all._
 import com.comcast.ip4s.SocketAddress
 import com.comcast.ip4s._
+import dk.alfabetacain.scadis.codec.Codec
 import dk.alfabetacain.scadis.parser.Value
-import dk.alfabetacain.scadis.parser.Value.RESPArray
-import dk.alfabetacain.scadis.parser.Value.RESPBulkString
-import dk.alfabetacain.scadis.parser.Value.RESPError
-import dk.alfabetacain.scadis.parser.Value.RESPInteger
-import dk.alfabetacain.scadis.parser.Value.RESPNull
-import dk.alfabetacain.scadis.parser.Value.SimpleString
 import fs2.io.net.Network
+import org.typelevel.log4cats.slf4j.Slf4jFactory
 import weaver._
 
 import java.nio.charset.StandardCharsets
 import java.util.UUID
-import scala.util.Try
 import scala.annotation.nowarn
-import org.typelevel.log4cats.slf4j.Slf4jFactory
-import dk.alfabetacain.scadis.codec.Codec
-import cats.data.NonEmptyList
+import scala.util.Try
 
-object IntegrationSuite extends IOSuite {
+object ClientSuite extends IOSuite {
 
   override type Res = RedisContainer
 
@@ -55,14 +49,14 @@ object IntegrationSuite extends IOSuite {
 
   private def asString(input: Value): Either[String, String] = {
     input match {
-      case RESPInteger(value) => Right(value.toString)
-      case RESPError(value) =>
+      case Value.RLong(value) => Right(value.toString)
+      case Value.RError(value) =>
         Left(value)
-      case RESPBulkString(data) => Try(new String(data, StandardCharsets.UTF_8)).toEither.left.map(_.toString())
-      case SimpleString(value)  => Right(value)
-      case RESPArray(elements) =>
+      case Value.RBulkString(data) => Try(new String(data, StandardCharsets.UTF_8)).toEither.left.map(_.toString())
+      case Value.RString(value)    => Right(value)
+      case Value.RArray(elements) =>
         elements.map(asString).sequence[Either[String, *], String].map(_.mkString(","))
-      case RESPNull => Left("null")
+      case Value.RNull => Left("null")
     }
   }
 
@@ -73,7 +67,6 @@ object IntegrationSuite extends IOSuite {
       for {
         _          <- conn.set(key, value)
         clientId   <- conn.clientId()
-        _          <- IO.println(s"id = $clientId")
         killResult <- conn.killClient(NonEmptyList.of(Client.KillClientFilter.Id(clientId)), false)
         _          <- expect(killResult == 1).failFast
         foundValue <- conn.get(key)
@@ -113,9 +106,22 @@ object IntegrationSuite extends IOSuite {
 
   test("a thousand pings on one connection") { redis =>
     connection(redis, false).use { client =>
-      List.fill(2000)(
+      List.fill(1000)(
         client.ping()
       ).parSequence.map(ls => forEach(ls)(item => expect(item == "PONG")))
+    }
+  }
+
+  test("Sending unknown command does not break the connection") { redis =>
+    connection(redis, false).use { client =>
+      val key   = randomStr("key")
+      val value = randomStr("value")
+      for {
+        _     <- client.raw(NonEmptyList.of(Util.toBS("UNKNOWNCOMMAND")))
+        _     <- client.set(key, value)
+        found <- client.get(key)
+      } yield expect(found == Some(value))
+
     }
   }
 }

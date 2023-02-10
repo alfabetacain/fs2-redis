@@ -4,6 +4,8 @@ import cats.MonadThrow
 import cats.syntax.all._
 import dk.alfabetacain.scadis.parser.Value
 
+import java.nio.charset.StandardCharsets
+
 private[scadis] object Util {
 
   private[scadis] def expect[F[_]: MonadThrow, A](action: F[Value], mapper: PartialFunction[Value, A]): F[A] = {
@@ -16,4 +18,7 @@ private[scadis] object Util {
     }
   }
 
+  private[scadis] def toBS(input: String): Value.RBulkString = {
+    Value.RBulkString(input.getBytes(StandardCharsets.US_ASCII))
+  }
 }

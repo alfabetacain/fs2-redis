@@ -1,21 +1,22 @@
 package dk.alfabetacain.scadis
 
+import cats.data.NonEmptyList
+import cats.effect.ExitCode
+import cats.effect.IO
+import cats.effect.IOApp
+import cats.effect.kernel.Async
 import cats.effect.kernel.Deferred
 import cats.effect.kernel.Resource
 import cats.syntax.all._
 import com.comcast.ip4s._
+import dk.alfabetacain.scadis.codec.Codec
+import dk.alfabetacain.scadis.parser.Value
 import fs2.io.net.Network
 import fs2.text
+import org.typelevel.log4cats.LoggerFactory
+import org.typelevel.log4cats.slf4j.Slf4jFactory
 
 import java.nio.charset.StandardCharsets
-import cats.effect.kernel.Async
-import cats.effect.IOApp
-import cats.effect.{ ExitCode, IO }
-import org.typelevel.log4cats.slf4j.Slf4jFactory
-import org.typelevel.log4cats.LoggerFactory
-import dk.alfabetacain.scadis.codec.Codec
-import cats.data.NonEmptyList
-import dk.alfabetacain.scadis.parser.Value
 import scala.util.Try
 
 object Repl extends IOApp {
@@ -32,14 +33,14 @@ object Repl extends IOApp {
 
   private def asString(input: Value): Either[String, String] = {
     input match {
-      case Value.RESPInteger(value) => Right(value.toString)
-      case Value.RESPError(value) =>
+      case Value.RLong(value) => Right(value.toString)
+      case Value.RError(value) =>
         Left(value)
-      case Value.RESPBulkString(data) => Try(new String(data, StandardCharsets.UTF_8)).toEither.left.map(_.toString())
-      case Value.SimpleString(value)  => Right(value)
-      case Value.RESPArray(elements) =>
+      case Value.RBulkString(data) => Try(new String(data, StandardCharsets.UTF_8)).toEither.left.map(_.toString())
+      case Value.RString(value)    => Right(value)
+      case Value.RArray(elements) =>
         elements.map(asString).sequence[Either[String, *], String].map(_.mkString(","))
-      case Value.RESPNull => Left("null")
+      case Value.RNull => Left("null")
     }
   }
 

@@ -1,10 +1,10 @@
 package dk.alfabetacain.scadis
 
-import cats.effect.kernel.Resource
 import cats.effect.IO
-import org.testcontainers.utility.DockerImageName
+import cats.effect.kernel.Resource
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
+import org.testcontainers.utility.DockerImageName
 
 class RedisClusterContainer(dockerImageName: DockerImageName)
     extends GenericContainer[RedisClusterContainer](dockerImageName) {

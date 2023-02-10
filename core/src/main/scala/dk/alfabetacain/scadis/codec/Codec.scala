@@ -5,21 +5,28 @@ import dk.alfabetacain.scadis.parser.Value
 import java.nio.charset.StandardCharsets
 import scala.util.Try
 
-trait Codec[A, B] {
-  def encode(input: A): B
-  def decode(input: B): Either[Throwable, A]
+trait Codec[A] extends Encoder[A] with Decoder[A] {
+  def encode(input: A): Value.RBulkString
+  def decode(input: Value.RBulkString): Either[Throwable, A]
+}
+
+trait Encoder[A] {
+  def encode(input: A): Value.RBulkString
+}
+
+trait Decoder[A] {
+  def decode(input: Value.RBulkString): Either[Throwable, A]
 }
 
 object Codec {
-  type BulkStringCodec[A] = Codec[A, Value.RESPBulkString]
 
-  def utf8Codec: Codec[String, Value.RESPBulkString] = {
-    new Codec[String, Value.RESPBulkString] {
-      override def encode(input: String): Value.RESPBulkString =
-        Value.RESPBulkString(input.getBytes(StandardCharsets.UTF_8))
+  def utf8Codec: Codec[String] = {
+    new Codec[String] {
+      override def encode(input: String): Value.RBulkString =
+        Value.RBulkString(input.getBytes(StandardCharsets.UTF_8))
 
-      override def decode(input: Value.RESPBulkString): Either[Throwable, String] = {
-        Try(new String(input.data, StandardCharsets.UTF_8)).toEither
+      override def decode(input: Value.RBulkString): Either[Throwable, String] = {
+        Try(new String(input.value, StandardCharsets.UTF_8)).toEither
       }
     }
   }

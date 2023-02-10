@@ -1,8 +1,8 @@
 package dk.alfabetacain.scadis
 
-import cats.syntax.all._
 import cats.effect.IO
 import cats.effect.kernel.Resource
+import cats.syntax.all._
 import com.comcast.ip4s._
 import dk.alfabetacain.scadis.codec.Codec
 import org.typelevel.log4cats.slf4j.Slf4jFactory

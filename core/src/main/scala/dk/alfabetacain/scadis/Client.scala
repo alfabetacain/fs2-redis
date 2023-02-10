@@ -7,12 +7,12 @@ import cats.effect.kernel.Sync
 import cats.syntax.all._
 import dk.alfabetacain.scadis.Client.KillClientFilter
 import dk.alfabetacain.scadis.Util.expect
-import dk.alfabetacain.scadis.codec.Codec.BulkStringCodec
+import dk.alfabetacain.scadis.Util.toBS
+import dk.alfabetacain.scadis.codec.Decoder
+import dk.alfabetacain.scadis.codec.Encoder
 import dk.alfabetacain.scadis.parser.Value
 import fs2.io.net.Socket
 import org.typelevel.log4cats.LoggerFactory
-
-import java.nio.charset.StandardCharsets
 
 trait Client[F[_], I, O] {
   def get(key: I): F[Option[O]]
@@ -20,33 +20,29 @@ trait Client[F[_], I, O] {
   def ping(): F[String]
   def clientId(): F[Long]
   def killClient(filters: NonEmptyList[KillClientFilter], killMe: Boolean): F[Long]
-  def raw(arguments: NonEmptyList[Value.RESPBulkString]): F[Value]
+  def raw(arguments: NonEmptyList[Value.RBulkString]): F[Value]
 }
 
 private[scadis] class ClientImpl[F[_]: Sync, I, O](
     conn: Connection[F],
-    inputCodec: BulkStringCodec[I],
-    outputCodec: BulkStringCodec[O]
+    encoder: Encoder[I],
+    decoder: Decoder[O]
 ) extends Client[F, I, O] {
 
-  override def raw(arguments: NonEmptyList[Value.RESPBulkString]): F[Value] = {
-    val asArray = Value.RESPArray(arguments.toList)
+  override def raw(arguments: NonEmptyList[Value.RBulkString]): F[Value] = {
     for {
-      sendResult <- conn.send(asArray)
+      sendResult <- conn.send(arguments)
     } yield sendResult
   }
 
-  private def toBS(input: String): Value.RESPBulkString =
-    Value.RESPBulkString(input.getBytes(StandardCharsets.US_ASCII))
-
-  private def encode(input: I): Value.RESPBulkString = inputCodec.encode(input)
+  private def encode(input: I): Value.RBulkString = encoder.encode(input)
 
   override def get(key: I): F[Option[O]] = {
     expect(
       raw(NonEmptyList.of(toBS("GET"), encode(key))),
       {
-        case Value.RESPNull               => Option.empty
-        case result: Value.RESPBulkString => outputCodec.decode(result).toOption
+        case Value.RNull               => Option.empty
+        case result: Value.RBulkString => decoder.decode(result).toOption
       }
     )
   }
@@ -55,7 +51,7 @@ private[scadis] class ClientImpl[F[_]: Sync, I, O](
     expect(
       raw(NonEmptyList.of(toBS("SET"), encode(key), encode(value))),
       {
-        case simple: Value.SimpleString => simple.value == "OK"
+        case simple: Value.RString => simple.value == "OK"
       }
     )
   }
@@ -64,7 +60,7 @@ private[scadis] class ClientImpl[F[_]: Sync, I, O](
     expect(
       raw(NonEmptyList.of(toBS("PING"))),
       {
-        case simple: Value.SimpleString => simple.value
+        case simple: Value.RString => simple.value
       }
     )
   }
@@ -73,7 +69,7 @@ private[scadis] class ClientImpl[F[_]: Sync, I, O](
     expect(
       raw(NonEmptyList.of(toBS("CLIENT"), toBS("ID"))),
       {
-        case number: Value.RESPInteger => number.value
+        case number: Value.RLong => number.value
       }
     )
   }
@@ -88,8 +84,8 @@ private[scadis] class ClientImpl[F[_]: Sync, I, O](
         toBS(if (killMe) "yes" else "no")
       )),
       {
-        case simple: Value.SimpleString => if (simple.value == "OK") 1 else 0
-        case number: Value.RESPInteger  => number.value
+        case simple: Value.RString => if (simple.value == "OK") 1 else 0
+        case number: Value.RLong   => number.value
       }
     )
   }
@@ -108,11 +104,11 @@ object Client {
   def make[F[_]: Async: LoggerFactory, I, O](
       connect: Resource[F, Socket[F]],
       config: Config,
-      inputCodec: BulkStringCodec[I],
-      outputCodec: BulkStringCodec[O]
+      encoder: Encoder[I],
+      decoder: Decoder[O]
   ): Resource[F, Client[F, I, O]] = {
     Connection.make[F](connect, config.autoReconnect).map { conn =>
-      new ClientImpl[F, I, O](conn, inputCodec, outputCodec)
+      new ClientImpl[F, I, O](conn, encoder, decoder)
     }
   }
 }
